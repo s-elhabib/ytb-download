@@ -1,2 +1,16 @@
 /downloads/
 /ffmpeg/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Dependencies
+/node_modules/
+/.venv/
+/__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
