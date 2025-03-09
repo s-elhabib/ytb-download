@@ -1,16 +1,30 @@
-/downloads/
+# FFmpeg binaries
 /ffmpeg/
 *.exe
 *.dll
 *.so
 *.dylib
 
-# Dependencies
-/node_modules/
-/.venv/
-/__pycache__/
-*.pyc
+# Downloads folder
+/downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+venv/
+ENV/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
