@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        'stripe-dark': '#0A2540',
+                        'stripe-purple': '#635BFF',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-stripe-dark text-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-12 max-w-4xl">
+        <!-- Header -->
+        <div class="text-center mb-12">
+            <h1 class="text-4xl font-bold mb-4 bg-gradient-to-r from-purple-400 to-pink-600 text-transparent bg-clip-text">
+                YouTube Downloader
+            </h1>
+            <p class="text-gray-400">Download YouTube videos in your preferred quality</p>
+        </div>
+
+        <!-- Main Input -->
+        <div class="bg-gray-900 rounded-xl p-6 shadow-xl mb-8">
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-400 mb-2">Video URL</label>
+                    <div class="flex gap-4">
+                        <input 
+                            type="text" 
+                            id="videoUrl" 
+                            class="flex-1 bg-gray-800 rounded-lg px-4 py-3 text-gray-100 border border-gray-700 focus:outline-none focus:border-stripe-purple transition"
+                            placeholder="https://www.youtube.com/watch?v=..."
+                        >
+                        <button 
+                            id="checkFormats" 
+                            class="bg-stripe-purple hover:bg-purple-700 text-white px-6 py-3 rounded-lg transition duration-200 flex items-center gap-2"
+                        >
+                            <span>Check Formats</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading State -->
+        <div id="loading" class="hidden">
+            <div class="flex items-center justify-center space-x-2 animate-pulse">
+                <div class="w-3 h-3 bg-stripe-purple rounded-full"></div>
+                <div class="w-3 h-3 bg-stripe-purple rounded-full"></div>
+                <div class="w-3 h-3 bg-stripe-purple rounded-full"></div>
+            </div>
+        </div>
+
+        <!-- Video Info and Formats -->
+        <div id="videoInfo" class="hidden">
+            <div class="bg-gray-900 p-6 rounded-lg shadow-lg">
+                <h2 id="videoTitle" class="text-xl font-bold mb-2"></h2>
+                <p id="videoDuration" class="text-gray-400 mb-4"></p>
+                
+                <!-- Added formats div here -->
+                <div id="formats" class="mb-4">
+                    <h3 class="text-lg font-semibold mb-2">Available qualities:</h3>
+                    <div id="formatsList" class="space-y-2">
+                        <!-- Formats will be inserted here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Status Messages -->
+        <div id="status" class="mt-6"></div>
+    </div>
+
+    <script>
+        function formatDuration(seconds) {
+            if (!seconds) return '';
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            return [hours, minutes, secs]
+                .map(v => v < 10 ? "0" + v : v)
+                .filter((v, i) => v !== "00" || i > 0)
+                .join(":");
+        }
+
+        document.getElementById('checkFormats').addEventListener('click', async () => {
+            const videoUrl = document.getElementById('videoUrl').value;
+            if (!videoUrl) {
+                showStatus('Please enter a YouTube URL', 'error');
+                return;
+            }
+
+            // Show loading
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('videoInfo').classList.add('hidden');
+            
+            try {
+                const response = await fetch('/api/formats', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    body: JSON.stringify({ url: videoUrl })
+                });
+                
+                // Add this block to see the raw response
+                const rawText = await response.text();
+                console.log('Raw server response:', rawText);
+                
+                // Try parsing it manually to see where it fails
+                try {
+                    const data = JSON.parse(rawText);
+                } catch (parseError) {
+                    console.error('JSON Parse Error:', parseError);
+                    throw new Error(`JSON Parse Error: ${parseError.message}`);
+                }
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = JSON.parse(rawText);  // Parse the saved raw text
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                // Update video info
+                document.getElementById('videoTitle').textContent = data.title;
+                document.getElementById('videoDuration').textContent = formatDuration(data.duration);
+                
+                // Update formats list
+                const formatsList = document.getElementById('formatsList');
+                formatsList.innerHTML = '';
+
+                data.formats.forEach((format, index) => {
+                    const button = document.createElement('button');
+                    button.className = 'w-full text-left px-4 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 transition duration-200';
+                    
+                    const formatText = `${format.resolution} (${format.ext})${format.filesize ? ` - ${format.filesize}` : ''}`;
+                    
+                    button.textContent = formatText;
+                    button.onclick = () => downloadVideo(videoUrl, format.format_id);
+                    formatsList.appendChild(button);
+                });
+                
+                document.getElementById('videoInfo').classList.remove('hidden');
+                
+            } catch (error) {
+                showStatus(`Error: ${error.message}`, 'error');
+            } finally {
+                document.getElementById('loading').classList.add('hidden');
+            }
+        });
+
+        async function downloadVideo(url, formatId) {
+            showStatus('Starting download...', 'info');
+            
+            try {
+                const response = await fetch('/api/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, format_id: formatId })
+                });
+                
+                const data = await response.json();
+                
+                if (data.error) throw new Error(data.error);
+                
+                showStatus('Download completed successfully', 'info');
+            } catch (error) {
+                showStatus(error.message, 'error');
+            }
+        }
+
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = 'mt-6 p-4 rounded-lg ' + 
+                (type === 'error' ? 'bg-red-900' : 'bg-blue-900');
+            statusDiv.textContent = message;
+        }
+    </script>
+</body>
+</html>

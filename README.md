@@ -119,3 +119,12 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Disclaimer
 
 This tool is for personal use only. Please respect YouTube's terms of service and content creators' rights when downloading videos.
+
+```bash
+git remote set-url origin git@github.com:s-elhabib/ytb-download.git
+```
+
+```bash
+git push -u origin main
+```
+
