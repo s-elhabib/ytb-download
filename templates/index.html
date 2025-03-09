@@ -82,16 +82,13 @@
     </div>
 
     <script>
-        function formatDuration(seconds) {
-            if (!seconds) return '';
-            const hours = Math.floor(seconds / 3600);
-            const minutes = Math.floor((seconds % 3600) / 60);
-            const secs = seconds % 60;
-            return [hours, minutes, secs]
-                .map(v => v < 10 ? "0" + v : v)
-                .filter((v, i) => v !== "00" || i > 0)
-                .join(":");
-        }
+        document.addEventListener('DOMContentLoaded', () => {
+            const videoInfoDiv = document.getElementById('videoInfo');
+            const thumbnailImg = document.createElement('img');
+            thumbnailImg.className = 'w-full h-48 object-cover rounded-lg mb-4';
+            thumbnailImg.id = 'videoThumbnail';
+            videoInfoDiv.insertBefore(thumbnailImg, videoInfoDiv.firstChild);
+        });
 
         document.getElementById('checkFormats').addEventListener('click', async () => {
             const videoUrl = document.getElementById('videoUrl').value;
@@ -114,23 +111,11 @@
                     body: JSON.stringify({ url: videoUrl })
                 });
                 
-                // Add this block to see the raw response
-                const rawText = await response.text();
-                console.log('Raw server response:', rawText);
-                
-                // Try parsing it manually to see where it fails
-                try {
-                    const data = JSON.parse(rawText);
-                } catch (parseError) {
-                    console.error('JSON Parse Error:', parseError);
-                    throw new Error(`JSON Parse Error: ${parseError.message}`);
-                }
+                const data = await response.json();
                 
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                
-                const data = JSON.parse(rawText);  // Parse the saved raw text
                 
                 if (data.error) {
                     throw new Error(data.error);
@@ -140,15 +125,27 @@
                 document.getElementById('videoTitle').textContent = data.title;
                 document.getElementById('videoDuration').textContent = formatDuration(data.duration);
                 
+                // Update thumbnail
+                const thumbnailImg = document.getElementById('videoThumbnail');
+                if (data.thumbnail) {
+                    thumbnailImg.src = data.thumbnail;
+                    thumbnailImg.classList.remove('hidden');
+                } else {
+                    thumbnailImg.classList.add('hidden');
+                }
+                
                 // Update formats list
                 const formatsList = document.getElementById('formatsList');
                 formatsList.innerHTML = '';
 
                 data.formats.forEach((format, index) => {
                     const button = document.createElement('button');
-                    button.className = 'w-full text-left px-4 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 transition duration-200';
+                    button.className = 'w-full text-left px-4 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 transition duration-200 mb-2';
                     
-                    const formatText = `${format.resolution} (${format.ext})${format.filesize ? ` - ${format.filesize}` : ''}`;
+                    // Create a more detailed format description
+                    const resolution = format.resolution.replace('?x?', 'Unknown');
+                    const size = format.filesize === 'N/A' ? 'Unknown size' : format.filesize;
+                    const formatText = `${resolution} (.${format.ext}) - ${size}`;
                     
                     button.textContent = formatText;
                     button.onclick = () => downloadVideo(videoUrl, format.format_id);
@@ -174,10 +171,27 @@
                     body: JSON.stringify({ url, format_id: formatId })
                 });
                 
+                // Start progress polling
+                const progressInterval = setInterval(async () => {
+                    const progressResponse = await fetch('/api/progress');
+                    const progressData = await progressResponse.json();
+                    
+                    if (progressData.status === 'downloading') {
+                        const percentage = progressData.percentage || 0;
+                        const speed = formatBytes(progressData.speed) + '/s';
+                        const eta = formatTime(progressData.eta);
+                        showStatus(`Downloading: ${percentage.toFixed(1)}% (${speed}) ETA: ${eta}`, 'info');
+                    } else if (progressData.status === 'finished') {
+                        clearInterval(progressInterval);
+                        showStatus('Download completed successfully', 'info');
+                    }
+                }, 1000);
+                
                 const data = await response.json();
                 
                 if (data.error) throw new Error(data.error);
                 
+                clearInterval(progressInterval);
                 showStatus('Download completed successfully', 'info');
             } catch (error) {
                 showStatus(error.message, 'error');
@@ -189,6 +203,35 @@
             statusDiv.className = 'mt-6 p-4 rounded-lg ' + 
                 (type === 'error' ? 'bg-red-900' : 'bg-blue-900');
             statusDiv.textContent = message;
+        }
+
+        // Add these helper functions
+        function formatBytes(bytes) {
+            if (!bytes) return '0 B';
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${sizes[i]}`;
+        }
+
+        function formatTime(seconds) {
+            if (!seconds) return '00:00';
+            const minutes = Math.floor(seconds / 60);
+            seconds = Math.floor(seconds % 60);
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        function formatDuration(seconds) {
+            if (!seconds) return 'Unknown duration';
+            
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            
+            if (hours > 0) {
+                return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+            } else {
+                return `${minutes}:${String(secs).padStart(2, '0')}`;
+            }
         }
     </script>
 </body>

@@ -11,41 +11,50 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 # Setup portable FFmpeg
 FFMPEG_PATH = get_ffmpeg()
 
-def get_ydl_opts(format_id=None):
+class ProgressHook:
+    def __init__(self):
+        self.progress = {}
+
+    def __call__(self, d):
+        if d['status'] == 'downloading':
+            self.progress['status'] = 'downloading'
+            self.progress['downloaded_bytes'] = d.get('downloaded_bytes', 0)
+            self.progress['total_bytes'] = d.get('total_bytes', 0)
+            self.progress['speed'] = d.get('speed', 0)
+            self.progress['eta'] = d.get('eta', 0)
+            if d.get('total_bytes'):
+                self.progress['percentage'] = (d['downloaded_bytes'] / d['total_bytes']) * 100
+            elif d.get('total_bytes_estimate'):
+                self.progress['percentage'] = (d['downloaded_bytes'] / d['total_bytes_estimate']) * 100
+        elif d['status'] == 'finished':
+            self.progress['status'] = 'finished'
+
+def get_ydl_opts(format_id=None, progress_hook=None):
     """Get yt-dlp options with FFmpeg configuration"""
-    return {
-        'format': format_id if format_id else 'bestvideo+bestaudio/best',
+    opts = {
+        'format': format_id if format_id else 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
         'ffmpeg_location': FFMPEG_PATH,
+        'merge_output_format': 'mp4',  # Force MP4 as output
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }],
     }
+    if progress_hook:
+        opts['progress_hooks'] = [progress_hook]
+    return opts
 
-def format_size(bytes):
-    """Convert bytes to human readable format"""
+def format_filesize(bytes):
+    """Convert bytes to human readable string"""
     if not bytes:
-        return 'N/A'
+        return "N/A"
+    
     for unit in ['B', 'KB', 'MB', 'GB']:
         if bytes < 1024:
             return f"{bytes:.1f} {unit}"
         bytes /= 1024
-    return f"{bytes:.1f} GB"
-
-def get_format_info(f):
-    """Extract and format information about a video/audio format"""
-    vcodec = f.get('vcodec', 'none')
-    acodec = f.get('acodec', 'none')
-    
-    # Only include formats with both video and audio
-    if vcodec != 'none' and acodec != 'none':
-        return {
-            'format_id': f['format_id'],
-            'resolution': f.get('resolution', 'N/A'),
-            'ext': f['ext'],
-            'filesize': format_size(f.get('filesize', 0)),
-            'vcodec': vcodec,
-            'acodec': acodec,
-            'tbr': f.get('tbr', 0)
-        }
-    return None
+    return f"{bytes:.1f} TB"
 
 @app.route('/')
 def index():
@@ -58,46 +67,93 @@ def get_formats():
         return jsonify({'error': 'URL is required'}), 400
 
     try:
-        with YoutubeDL(get_ydl_opts()) as ydl:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+        }
+        
+        with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             
-            # Add best quality option first
-            formats = [{
-                'format_id': 'best',
-                'resolution': 'Best Quality',
-                'ext': 'Automatic',
-                'filesize': '',
-                'vcodec': 'best',
-                'acodec': 'best',
-                'tbr': 0  # Changed from float('inf') to 0
-            }]
+            formats = []
+            # Get best audio format (prefer m4a for compatibility with mp4)
+            best_audio = next(
+                (f for f in info['formats'] 
+                 if f.get('vcodec') == 'none' 
+                 and f.get('acodec') != 'none'
+                 and f.get('ext') == 'm4a'),
+                None
+            )
             
-            # Process formats with both video and audio
-            for f in info['formats']:
-                format_info = get_format_info(f)
-                if format_info:
-                    formats.append(format_info)
+            # Add "Best Quality" option first
+            formats.append({
+                'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'resolution': 'Best Quality',
+                'ext': 'mp4',
+                'filesize': 'Auto',
+                'height': 99999,  # for sorting
+                'fps': 99999,     # for sorting
+            })
+            
+            for format in info['formats']:
+                # Skip audio-only formats
+                if format.get('vcodec', 'none') == 'none':
+                    continue
+                    
+                # Get resolution for sorting
+                height = format.get('height', 0) or 0
+                
+                # For MP4 formats, ensure we include audio
+                format_id = format['format_id']
+                if format.get('acodec') == 'none':
+                    format_id = f"{format_id}+bestaudio[ext=m4a]/bestaudio"
+                
+                # Calculate size
+                if format.get('acodec', 'none') != 'none':
+                    # Combined format (has both video and audio)
+                    total_size = format.get('filesize', 0) or format.get('filesize_approx', 0) or 0
+                else:
+                    # Video-only format, need to add audio size
+                    video_size = format.get('filesize', 0) or format.get('filesize_approx', 0) or 0
+                    audio_size = (best_audio.get('filesize', 0) or best_audio.get('filesize_approx', 0) or 0) if best_audio else 0
+                    total_size = video_size + audio_size
 
-            # Sort formats by resolution (excluding the first "Best Quality" option)
-            def get_resolution_value(fmt):
-                if fmt['resolution'] == 'Best Quality':
-                    return float('inf')
-                res = fmt['resolution'].split('x')[0]
-                return int(res) if res.isdigit() else 0
+                formats.append({
+                    'format_id': format_id,
+                    'resolution': f"{format.get('width', '?')}x{format.get('height', '?')}",
+                    'ext': 'mp4',
+                    'filesize': format_filesize(total_size),
+                    'height': height,  # for sorting
+                    'fps': format.get('fps', 0) or 0,
+                })
 
-            first_format = formats[0]
-            remaining_formats = sorted(formats[1:], 
-                                    key=get_resolution_value,
-                                    reverse=True)
-            formats = [first_format] + remaining_formats
+            # Sort formats by resolution (height) and fps, highest quality first
+            formats.sort(key=lambda x: (x['height'], x['fps']), reverse=True)
+
+            # Remove temporary sorting fields
+            for format in formats:
+                format.pop('height')
+                format.pop('fps')
+
+            # Get best thumbnail
+            thumbnail = None
+            if info.get('thumbnails'):
+                thumbnails = sorted(
+                    [t for t in info['thumbnails'] if t.get('width') and t.get('url')],
+                    key=lambda x: (x.get('width', 0) or 0),
+                    reverse=True
+                )
+                if thumbnails:
+                    thumbnail = thumbnails[0]['url']
 
             return jsonify({
                 'title': info['title'],
-                'thumbnail': info['thumbnail'],
-                'duration': info['duration'],
+                'thumbnail': thumbnail,
+                'duration': info.get('duration', 0),
                 'formats': formats
             })
     except Exception as e:
+        print(f"Error: {str(e)}")
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/download', methods=['POST'])
@@ -109,12 +165,18 @@ def download():
         return jsonify({'error': 'URL is required'}), 400
 
     try:
-        with YoutubeDL(get_ydl_opts(format_id)) as ydl:
+        progress_hook = ProgressHook()
+        with YoutubeDL(get_ydl_opts(format_id, progress_hook)) as ydl:
             ydl.download([url])
-        
         return jsonify({'success': True, 'message': 'Download completed successfully'})
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+@app.route('/api/progress')
+def get_progress():
+    # This endpoint will be polled by the frontend to get download progress
+    progress_hook = ProgressHook()
+    return jsonify(progress_hook.progress)
 
 if __name__ == '__main__':
     app.run(debug=True)
