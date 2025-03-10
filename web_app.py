@@ -52,9 +52,9 @@ def format_filesize(bytes):
     
     for unit in ['B', 'KB', 'MB', 'GB']:
         if bytes < 1024:
-            return f"{bytes:.1f} {unit}"
+            return f"{bytes:.2f} {unit}"
         bytes /= 1024
-    return f"{bytes:.1f} TB"
+    return f"{bytes:.2f} TB"
 
 @app.route('/')
 def index():
@@ -90,68 +90,61 @@ def get_formats():
                 'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'resolution': 'Best Quality',
                 'ext': 'mp4',
-                'filesize': 'Auto',
+                'filesize': 'Automatic',
                 'height': 99999,  # for sorting
                 'fps': 99999,     # for sorting
             })
             
+            # Process available formats
             for format in info['formats']:
                 # Skip audio-only formats
-                if format.get('vcodec', 'none') == 'none':
+                if format.get('vcodec') == 'none':
                     continue
-                    
-                # Get resolution for sorting
-                height = format.get('height', 0) or 0
                 
-                # For MP4 formats, ensure we include audio
-                format_id = format['format_id']
-                if format.get('acodec') == 'none':
-                    format_id = f"{format_id}+bestaudio[ext=m4a]/bestaudio"
+                # Get resolution
+                height = format.get('height', 0)
+                width = format.get('width', 0)
                 
-                # Calculate size
-                if format.get('acodec', 'none') != 'none':
-                    # Combined format (has both video and audio)
-                    total_size = format.get('filesize', 0) or format.get('filesize_approx', 0) or 0
-                else:
-                    # Video-only format, need to add audio size
-                    video_size = format.get('filesize', 0) or format.get('filesize_approx', 0) or 0
-                    audio_size = (best_audio.get('filesize', 0) or best_audio.get('filesize_approx', 0) or 0) if best_audio else 0
-                    total_size = video_size + audio_size
+                if not height or not width:
+                    continue
+
+                # Skip non-MP4 formats
+                if format.get('ext') != 'mp4':
+                    continue
+                
+                # Calculate total size including audio
+                video_size = format.get('filesize', 0) or format.get('filesize_approx', 0) or 0
+                audio_size = (best_audio.get('filesize', 0) or best_audio.get('filesize_approx', 0) or 0) if best_audio else 0
+                total_size = video_size + audio_size
 
                 formats.append({
-                    'format_id': format_id,
-                    'resolution': f"{format.get('width', '?')}x{format.get('height', '?')}",
+                    'format_id': f"{format['format_id']}+bestaudio[ext=m4a]/bestaudio",
+                    'resolution': f"{width}x{height}",
                     'ext': 'mp4',
                     'filesize': format_filesize(total_size),
-                    'height': height,  # for sorting
+                    'height': height,
                     'fps': format.get('fps', 0) or 0,
                 })
 
-            # Sort formats by resolution (height) and fps, highest quality first
-            formats.sort(key=lambda x: (x['height'], x['fps']), reverse=True)
+            # Sort formats by resolution (height) and fps
+            formats = sorted(formats, key=lambda x: (x['height'], x['fps']), reverse=True)
 
-            # Remove temporary sorting fields
-            for format in formats:
-                format.pop('height')
-                format.pop('fps')
-
-            # Get best thumbnail
-            thumbnail = None
-            if info.get('thumbnails'):
-                thumbnails = sorted(
-                    [t for t in info['thumbnails'] if t.get('width') and t.get('url')],
-                    key=lambda x: (x.get('width', 0) or 0),
-                    reverse=True
-                )
-                if thumbnails:
-                    thumbnail = thumbnails[0]['url']
+            # Remove duplicates based on resolution
+            seen_resolutions = set()
+            unique_formats = []
+            for f in formats:
+                resolution = f['resolution']
+                if resolution not in seen_resolutions:
+                    seen_resolutions.add(resolution)
+                    unique_formats.append(f)
 
             return jsonify({
                 'title': info['title'],
-                'thumbnail': thumbnail,
+                'thumbnail': info.get('thumbnail'),
                 'duration': info.get('duration', 0),
-                'formats': formats
+                'formats': unique_formats
             })
+
     except Exception as e:
         print(f"Error: {str(e)}")
         return jsonify({'error': str(e)}), 400

@@ -67,7 +67,7 @@
                 <h2 id="videoTitle" class="text-xl font-bold mb-2"></h2>
                 <p id="videoDuration" class="text-gray-400 mb-4"></p>
                 
-                <!-- Added formats div here -->
+                <!-- Single formats section -->
                 <div id="formats" class="mb-4">
                     <h3 class="text-lg font-semibold mb-2">Available qualities:</h3>
                     <div id="formatsList" class="space-y-2">
@@ -142,10 +142,13 @@
                     const button = document.createElement('button');
                     button.className = 'w-full text-left px-4 py-3 rounded-lg bg-gray-800 hover:bg-gray-700 transition duration-200 mb-2';
                     
-                    // Create a more detailed format description
-                    const resolution = format.resolution.replace('?x?', 'Unknown');
-                    const size = format.filesize === 'N/A' ? 'Unknown size' : format.filesize;
-                    const formatText = `${resolution} (.${format.ext}) - ${size}`;
+                    // Create the format text in the desired style
+                    let formatText = `${index}. `;
+                    if (index === 0) {
+                        formatText += 'Best Quality (Automatic)';
+                    } else {
+                        formatText += `${format.resolution} (${format.ext}) - Size: ${format.filesize}`;
+                    }
                     
                     button.textContent = formatText;
                     button.onclick = () => downloadVideo(videoUrl, format.format_id);

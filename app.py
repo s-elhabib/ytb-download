@@ -1,7 +1,44 @@
-from flask import Flask, request, jsonify
+import os
+import tempfile
+from flask import Flask, request, jsonify, render_template
 from yt_dlp import YoutubeDL
+from utils.ffmpeg_downloader import get_ffmpeg  # Import the FFmpeg utility
 
 app = Flask(__name__)
+
+# Get the absolute path of the project directory (where app.py is located)
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Create downloads directory path
+DOWNLOAD_DIR = os.path.join(PROJECT_DIR, 'downloads')
+
+# Create the downloads directory if it doesn't exist
+if not os.path.exists(DOWNLOAD_DIR):
+    os.makedirs(DOWNLOAD_DIR)
+
+# Setup portable FFmpeg
+FFMPEG_PATH = get_ffmpeg()
+
+# Add this class at the top of your file, after the imports
+class ProgressHook:
+    def __init__(self):
+        self.progress = {}
+
+    def __call__(self, d):
+        if d['status'] == 'downloading':
+            self.progress['status'] = 'downloading'
+            self.progress['downloaded_bytes'] = d.get('downloaded_bytes', 0)
+            self.progress['total_bytes'] = d.get('total_bytes', 0)
+            self.progress['speed'] = d.get('speed', 0)
+            self.progress['eta'] = d.get('eta', 0)
+            if d.get('total_bytes'):
+                self.progress['percentage'] = (d['downloaded_bytes'] / d['total_bytes']) * 100
+            elif d.get('total_bytes_estimate'):
+                self.progress['percentage'] = (d['downloaded_bytes'] / d['total_bytes_estimate']) * 100
+        elif d['status'] == 'finished':
+            self.progress['status'] = 'finished'
+
+# Create a global progress hook instance
+progress_tracker = ProgressHook()
 
 @app.route('/')
 def index():
@@ -29,6 +66,7 @@ def get_formats():
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
+            'ffmpeg_location': FFMPEG_PATH,  # Add FFmpeg location
         }
         
         with YoutubeDL(ydl_opts) as ydl:
@@ -43,34 +81,77 @@ def get_formats():
             
             # Add best quality option
             response_data['formats'].append({
-                'format_id': 'best',
+                'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
                 'resolution': 'Best Quality',
-                'ext': 'Automatic',
-                'filesize': '',
-                'vcodec': 'best',
-                'acodec': 'best',
-                'tbr': 0  # Use 0 instead of Infinity
+                'ext': 'mp4',
+                'filesize': 'Automatic',
+                'height': 9999  # For sorting
             })
             
-            # Add other formats
+            # Get all video formats
+            all_formats = []
             for f in info.get('formats', []):
-                if f.get('vcodec', 'none') != 'none' and f.get('acodec', 'none') != 'none':
-                    format_data = {
-                        'format_id': f['format_id'],
-                        'resolution': f.get('resolution', 'N/A'),
-                        'ext': f.get('ext', 'N/A'),
-                        'filesize': format_size(f.get('filesize', 0)),
-                        'vcodec': f.get('vcodec', 'N/A'),
-                        'acodec': f.get('acodec', 'N/A'),
-                        'tbr': float(f.get('tbr', 0)) if f.get('tbr') is not None else 0
-                    }
-                    response_data['formats'].append(format_data)
+                # Include formats with video codec
+                if f.get('vcodec', 'none') != 'none':
+                    height = f.get('height', 0)
+                    if height:  # Only include formats with height information
+                        all_formats.append({
+                            'format_id': f['format_id'],
+                            'resolution': f"{height}p",
+                            'ext': f.get('ext', 'mp4'),
+                            'filesize': format_size(f.get('filesize', 0)),
+                            'height': height
+                        })
+            
+            # Sort by height (resolution) in descending order
+            all_formats = sorted(all_formats, key=lambda x: x['height'], reverse=True)
+            
+            # Target resolutions we want to show
+            target_resolutions = [1080, 720, 360, 144]
+            
+            # For each target resolution, find the closest available format
+            for target in target_resolutions:
+                closest_format = None
+                min_diff = float('inf')
+                
+                for fmt in all_formats:
+                    diff = abs(fmt['height'] - target)
+                    if diff < min_diff:
+                        min_diff = diff
+                        closest_format = fmt.copy()  # Make a copy to avoid modifying the original
+                
+                # If we found a format, add it with the target resolution label
+                if closest_format:
+                    # Update the resolution label to match our target
+                    closest_format['resolution'] = f"{target}p"
+                    # Add filesize info if available
+                    if closest_format['filesize'] != 'N/A':
+                        closest_format['resolution'] += f" (mp4) - Size: {closest_format['filesize']}"
+                    else:
+                        closest_format['resolution'] += f" (mp4)"
+                    # Update format_id to ensure we get both video and audio
+                    closest_format['format_id'] = f"{closest_format['format_id']}+bestaudio[ext=m4a]/bestaudio"
+                    response_data['formats'].append(closest_format)
+                else:
+                    # If no format is available, create a placeholder that uses the best format
+                    response_data['formats'].append({
+                        'format_id': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                        'resolution': f"{target}p (mp4) - Size: Automatic",
+                        'ext': 'mp4',
+                        'filesize': 'Automatic',
+                        'height': target
+                    })
             
             return jsonify(response_data)
 
     except Exception as e:
         print("Error:", str(e))
         return jsonify({'error': str(e)}), 400
+
+@app.route('/api/progress')
+def get_progress():
+    # This endpoint will be polled by the frontend to get download progress
+    return jsonify(progress_tracker.progress)
 
 @app.route('/api/download', methods=['POST'])
 def download_video():
@@ -82,13 +163,27 @@ def download_video():
         url = data['url']
         format_id = data['format_id']
         
-        ydl_opts = {
-            'format': format_id,
-            'quiet': True,
-        }
-        
-        with YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        # Use system's temp directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ydl_opts = {
+                'format': format_id,
+                'quiet': True,
+                'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
+                'merge_output_format': 'mp4',
+                'ffmpeg_location': FFMPEG_PATH,
+                'postprocessors': [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': 'mp4',
+                }],
+                'paths': {
+                    'home': DOWNLOAD_DIR,
+                    'temp': temp_dir,
+                },
+                'progress_hooks': [progress_tracker],  # Add the progress hook here
+            }
+            
+            with YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
             
         return jsonify({'success': True})
 
