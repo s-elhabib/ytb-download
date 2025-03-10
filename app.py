@@ -219,16 +219,10 @@ def download_video():
             'filename': ''
         }
 
-        # Extract resolution value from the string
-        if resolution:
-            resolution_value = resolution.split()[0]
-        else:
-            if format_id == 'bestaudio/best':
-                resolution_value = "MP3"
-            elif format_id.startswith('bestvideo'):
-                resolution_value = "BEST"
-            else:
-                resolution_value = "MP4"
+        # Disable logging for yt-dlp
+        logging.getLogger('yt_dlp').setLevel(logging.WARNING)
+        # Disable our app's logging during download
+        logger.setLevel(logging.WARNING)
 
         def format_size(bytes):
             """Convert bytes to human readable string"""
@@ -245,16 +239,13 @@ def download_video():
             return f"{format_size(speed)}/s" if speed else "0 B/s"
 
         def progress_hook(d):
-            progress_tracker(d)
             if d['status'] == 'downloading':
                 try:
-                    # Get downloaded bytes
+                    # Get downloaded bytes and total bytes
                     downloaded_bytes = d.get('downloaded_bytes', 0)
-                    
-                    # Get total bytes or estimate
                     total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
                     
-                    # Calculate percentage only if we have valid total bytes
+                    # Calculate percentage
                     if total_bytes > 0:
                         percentage = (downloaded_bytes / total_bytes) * 100
                     else:
@@ -264,21 +255,43 @@ def download_video():
                     speed = d.get('speed', 0)
                     eta = d.get('eta', 0)
                     
-                    # Format the values
+                    # Format values
                     speed_str = format_speed(speed)
                     downloaded_str = format_size(downloaded_bytes)
                     total_str = format_size(total_bytes) if total_bytes else 'Unknown'
                     eta_str = f"{int(eta//60)}:{int(eta%60):02d}" if eta else "??:??"
+                    
+                    # Update progress tracker
+                    progress_tracker.progress.update({
+                        'status': 'downloading',
+                        'downloaded_bytes': downloaded_bytes,
+                        'total_bytes': total_bytes,
+                        'speed': speed,
+                        'eta': eta,
+                        'percentage': percentage
+                    })
 
                     # Clear line and print progress
-                    print(f"\rDownloading: {percentage:5.1f}% | {downloaded_str}/{total_str} | Speed: {speed_str} | ETA: {eta_str}", 
+                    print(f"\rDownloading: {percentage:5.1f}% | {downloaded_str}/{total_str} | {speed_str} | ETA: {eta_str}", 
                           end='', flush=True)
                 except Exception as e:
-                    # If there's any error in progress calculation, just show basic status
-                    print(f"\rDownloading... {format_size(d.get('downloaded_bytes', 0))}", end='', flush=True)
+                    print(f"\rDownloading... {format_size(downloaded_bytes)}", end='', flush=True)
             
             elif d['status'] == 'finished':
                 print("\nDownload completed!")
+                progress_tracker.progress['status'] = 'finished'
+                progress_tracker.progress['percentage'] = 100
+
+        # Extract resolution value from the string
+        if resolution:
+            resolution_value = resolution.split()[0]
+        else:
+            if format_id == 'bestaudio/best':
+                resolution_value = "MP3"
+            elif format_id.startswith('bestvideo'):
+                resolution_value = "BEST"
+            else:
+                resolution_value = "MP4"
 
         # Add timestamp to filename to make it unique
         timestamp = int(time.time())
