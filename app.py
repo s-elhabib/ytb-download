@@ -179,16 +179,36 @@ def download_video():
 
         url = data['url']
         format_id = data['format_id']
+        resolution = data.get('resolution', '')  # Get the resolution if provided
+        
+        # Extract resolution value from the string (e.g., "1080p (mp4) - Size: 44.1 MB" -> "1080p")
+        if resolution:
+            resolution_value = resolution.split()[0]  # Get the first part (e.g., "1080p")
+        else:
+            # Default resolution labels based on format_id
+            if format_id == 'bestaudio/best':
+                resolution_value = "MP3"
+            elif format_id.startswith('bestvideo'):
+                resolution_value = "BEST"
+            else:
+                resolution_value = "MP4"
+        
+        # Create a filename template that includes the resolution
+        filename_template = os.path.join(DOWNLOAD_DIR, '%(title)s (%(resolution)s).%(ext)s')
         
         # Use system's temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
             ydl_opts = {
                 'format': format_id,
                 'quiet': True,
-                'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
+                'outtmpl': filename_template,
                 'merge_output_format': 'mp4',  # Default for video
                 'ffmpeg_location': FFMPEG_PATH,
                 'progress_hooks': [progress_tracker],
+                # Add custom metadata for the filename
+                'outtmpl_params': {
+                    'resolution': resolution_value,
+                }
             }
             
             # Check if this is an audio-only download
