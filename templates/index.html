@@ -79,6 +79,28 @@
 
         <!-- Status Messages -->
         <div id="status" class="mt-6"></div>
+
+        <!-- Download Progress -->
+        <div id="download-progress" class="bg-gray-900 rounded-xl p-6 shadow-xl mt-8" style="display: none;">
+            <h3 class="text-xl font-semibold mb-4">Downloading...</h3>
+            <div class="w-full bg-gray-800 rounded-full h-4 mb-4">
+                <div id="progress-bar" class="bg-stripe-purple h-4 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-gray-300">
+                <div>
+                    <p class="text-sm text-gray-400">Progress</p>
+                    <p id="progress-text" class="text-lg font-medium">0%</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-400">Estimated time</p>
+                    <p id="eta-text" class="text-lg font-medium">Calculating...</p>
+                </div>
+                <div>
+                    <p class="text-sm text-gray-400">Download speed</p>
+                    <p id="speed-text" class="text-lg font-medium">0 MB/s</p>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -151,7 +173,7 @@
                     }
                     
                     button.textContent = formatText;
-                    button.onclick = () => downloadVideo(videoUrl, format.format_id);
+                    button.onclick = () => downloadVideo(videoUrl, format.format_id, format.resolution);
                     formatsList.appendChild(button);
                 });
                 
@@ -164,41 +186,102 @@
             }
         });
 
-        async function downloadVideo(url, formatId) {
-            showStatus('Starting download...', 'info');
+        let progressInterval;
+        
+        function startProgressTracking() {
+            // Show progress container
+            document.getElementById('download-progress').style.display = 'block';
             
-            try {
-                const response = await fetch('/api/download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, format_id: formatId })
-                });
-                
-                // Start progress polling
-                const progressInterval = setInterval(async () => {
-                    const progressResponse = await fetch('/api/progress');
-                    const progressData = await progressResponse.json();
-                    
-                    if (progressData.status === 'downloading') {
-                        const percentage = progressData.percentage || 0;
-                        const speed = formatBytes(progressData.speed) + '/s';
-                        const eta = formatTime(progressData.eta);
-                        showStatus(`Downloading: ${percentage.toFixed(1)}% (${speed}) ETA: ${eta}`, 'info');
-                    } else if (progressData.status === 'finished') {
-                        clearInterval(progressInterval);
-                        showStatus('Download completed successfully', 'info');
-                    }
-                }, 1000);
-                
-                const data = await response.json();
-                
-                if (data.error) throw new Error(data.error);
-                
+            // Clear any existing interval
+            if (progressInterval) clearInterval(progressInterval);
+            
+            // Start polling for progress
+            progressInterval = setInterval(updateProgress, 1000);
+        }
+        
+        function stopProgressTracking() {
+            if (progressInterval) {
                 clearInterval(progressInterval);
-                showStatus('Download completed successfully', 'info');
-            } catch (error) {
-                showStatus(error.message, 'error');
+                progressInterval = null;
             }
+        }
+        
+        function updateProgress() {
+            fetch('/api/progress')
+                .then(response => response.json())
+                .then(data => {
+                    console.log('Progress data:', data); // Debug log
+                    
+                    if (data.status === 'downloading') {
+                        // Update progress bar
+                        const percentage = data.percentage || 0;
+                        document.getElementById('progress-bar').style.width = `${percentage}%`;
+                        document.getElementById('progress-text').textContent = `${percentage.toFixed(1)}%`;
+                        
+                        // Update speed
+                        const speed = data.speed || 0;
+                        const speedMBps = (speed / 1024 / 1024).toFixed(2);
+                        document.getElementById('speed-text').textContent = `Speed: ${speedMBps} MB/s`;
+                        
+                        // Update ETA with rounded seconds
+                        const eta = data.eta || 0;
+                        if (eta > 0) {
+                            const minutes = Math.floor(eta / 60);
+                            const seconds = Math.floor(eta % 60); // Use Math.floor to round down
+                            document.getElementById('eta-text').textContent = 
+                                `Estimated time: ${minutes}m ${seconds}s`;
+                        }
+                    } else if (data.status === 'finished') {
+                        // Download complete
+                        document.getElementById('progress-bar').style.width = '100%';
+                        document.getElementById('progress-text').textContent = 'Download complete!';
+                        document.getElementById('eta-text').textContent = '';
+                        document.getElementById('speed-text').textContent = '';
+                        
+                        // Stop polling after a short delay
+                        setTimeout(() => {
+                            stopProgressTracking();
+                            // Optionally hide the progress display after completion
+                            // document.getElementById('download-progress').style.display = 'none';
+                        }, 3000);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching progress:', error);
+                });
+        }
+        
+        function downloadVideo(url, formatId, resolution) {
+            // Start tracking progress
+            startProgressTracking();
+            
+            // Send download request
+            fetch('/api/download', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    url: url,
+                    format_id: formatId,
+                    resolution: resolution
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('Download initiated successfully');
+                } else {
+                    console.error('Download failed:', data.error);
+                    stopProgressTracking();
+                    alert('Download failed: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                stopProgressTracking();
+                alert('Error: ' + error);
+            });
         }
 
         function showStatus(message, type = 'info') {
@@ -236,6 +319,26 @@
                 return `${minutes}:${String(secs).padStart(2, '0')}`;
             }
         }
+
+        // Add CSS for the progress bar
+        document.head.insertAdjacentHTML('beforeend', `
+            <style>
+                .progress-container {
+                    width: 100%;
+                    background-color: #f1f1f1;
+                    border-radius: 5px;
+                    margin: 10px 0;
+                }
+                
+                .progress-bar {
+                    width: 0%;
+                    height: 30px;
+                    background-color: #4CAF50;
+                    border-radius: 5px;
+                    transition: width 0.5s ease;
+                }
+            </style>
+        `);
     </script>
 </body>
 </html>

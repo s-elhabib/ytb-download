@@ -1,8 +1,14 @@
 import os
 import tempfile
+import logging
 from flask import Flask, request, jsonify, render_template
 from yt_dlp import YoutubeDL
 from utils.ffmpeg_downloader import get_ffmpeg  # Import the FFmpeg utility
+import time
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -21,23 +27,42 @@ FFMPEG_PATH = get_ffmpeg()
 # Add this class at the top of your file, after the imports
 class ProgressHook:
     def __init__(self):
-        self.progress = {}
+        self.progress = {
+            'status': 'idle',
+            'downloaded_bytes': 0,
+            'total_bytes': 0,
+            'speed': 0,
+            'eta': 0,
+            'percentage': 0,
+            'filename': ''
+        }
 
     def __call__(self, d):
+        logger.info(f"Progress update: {d['status']}")
+        
         if d['status'] == 'downloading':
             self.progress['status'] = 'downloading'
             self.progress['downloaded_bytes'] = d.get('downloaded_bytes', 0)
             self.progress['total_bytes'] = d.get('total_bytes', 0)
             self.progress['speed'] = d.get('speed', 0)
             self.progress['eta'] = d.get('eta', 0)
+            self.progress['filename'] = d.get('filename', '')
+            
             if d.get('total_bytes'):
                 self.progress['percentage'] = (d['downloaded_bytes'] / d['total_bytes']) * 100
+                logger.info(f"Download progress: {self.progress['percentage']:.2f}%")
             elif d.get('total_bytes_estimate'):
                 self.progress['percentage'] = (d['downloaded_bytes'] / d['total_bytes_estimate']) * 100
+                logger.info(f"Download progress (estimate): {self.progress['percentage']:.2f}%")
+            else:
+                logger.info(f"Download progress: unknown (no total bytes)")
+        
         elif d['status'] == 'finished':
+            logger.info("Download finished!")
             self.progress['status'] = 'finished'
+            self.progress['percentage'] = 100
 
-# Create a global progress hook instance
+# Create a global progress hook instance that persists between requests
 progress_tracker = ProgressHook()
 
 @app.route('/')
@@ -167,6 +192,8 @@ def get_formats():
 
 @app.route('/api/progress')
 def get_progress():
+    # Log the current progress data
+    logger.info(f"Progress data: {progress_tracker.progress}")
     # This endpoint will be polled by the frontend to get download progress
     return jsonify(progress_tracker.progress)
 
@@ -179,38 +206,109 @@ def download_video():
 
         url = data['url']
         format_id = data['format_id']
-        resolution = data.get('resolution', '')  # Get the resolution if provided
-        
-        # Extract resolution value from the string (e.g., "1080p (mp4) - Size: 44.1 MB" -> "1080p")
+        resolution = data.get('resolution', '')
+
+        # Reset progress tracker for new download
+        progress_tracker.progress = {
+            'status': 'starting',
+            'downloaded_bytes': 0,
+            'total_bytes': 0,
+            'speed': 0,
+            'eta': 0,
+            'percentage': 0,
+            'filename': ''
+        }
+
+        # Extract resolution value from the string
         if resolution:
-            resolution_value = resolution.split()[0]  # Get the first part (e.g., "1080p")
+            resolution_value = resolution.split()[0]
         else:
-            # Default resolution labels based on format_id
             if format_id == 'bestaudio/best':
                 resolution_value = "MP3"
             elif format_id.startswith('bestvideo'):
                 resolution_value = "BEST"
             else:
                 resolution_value = "MP4"
-        
-        # Create a filename template that includes the resolution
-        filename_template = os.path.join(DOWNLOAD_DIR, '%(title)s (%(resolution)s).%(ext)s')
-        
+
+        def format_size(bytes):
+            """Convert bytes to human readable string"""
+            if not bytes:
+                return "0 B"
+            for unit in ['B', 'KB', 'MB', 'GB']:
+                if bytes < 1024:
+                    return f"{bytes:.1f} {unit}"
+                bytes /= 1024
+            return f"{bytes:.1f} TB"
+
+        def format_speed(speed):
+            """Convert speed to human readable string"""
+            return f"{format_size(speed)}/s" if speed else "0 B/s"
+
+        def progress_hook(d):
+            progress_tracker(d)
+            if d['status'] == 'downloading':
+                try:
+                    # Get downloaded bytes
+                    downloaded_bytes = d.get('downloaded_bytes', 0)
+                    
+                    # Get total bytes or estimate
+                    total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
+                    
+                    # Calculate percentage only if we have valid total bytes
+                    if total_bytes > 0:
+                        percentage = (downloaded_bytes / total_bytes) * 100
+                    else:
+                        percentage = 0
+                    
+                    # Get speed and eta
+                    speed = d.get('speed', 0)
+                    eta = d.get('eta', 0)
+                    
+                    # Format the values
+                    speed_str = format_speed(speed)
+                    downloaded_str = format_size(downloaded_bytes)
+                    total_str = format_size(total_bytes) if total_bytes else 'Unknown'
+                    eta_str = f"{int(eta//60)}:{int(eta%60):02d}" if eta else "??:??"
+
+                    # Clear line and print progress
+                    print(f"\rDownloading: {percentage:5.1f}% | {downloaded_str}/{total_str} | Speed: {speed_str} | ETA: {eta_str}", 
+                          end='', flush=True)
+                except Exception as e:
+                    # If there's any error in progress calculation, just show basic status
+                    print(f"\rDownloading... {format_size(d.get('downloaded_bytes', 0))}", end='', flush=True)
+            
+            elif d['status'] == 'finished':
+                print("\nDownload completed!")
+
+        # Add timestamp to filename to make it unique
+        timestamp = int(time.time())
+        filename_template = os.path.join(DOWNLOAD_DIR, f'%(title)s (%(resolution)s)_{timestamp}.%(ext)s')
+
         # Use system's temp directory
         with tempfile.TemporaryDirectory() as temp_dir:
             ydl_opts = {
                 'format': format_id,
-                'quiet': True,
                 'outtmpl': filename_template,
-                'merge_output_format': 'mp4',  # Default for video
+                'merge_output_format': 'mp4',
                 'ffmpeg_location': FFMPEG_PATH,
-                'progress_hooks': [progress_tracker],
-                # Add custom metadata for the filename
+                'progress_hooks': [progress_hook],
                 'outtmpl_params': {
                     'resolution': resolution_value,
+                },
+                'quiet': True,
+                'no_warnings': True,
+                'force_download': True,
+                'writesubtitles': False,
+                'writeautomaticsub': False,
+                'keepvideo': False,
+                'clean_infojson': True,
+                'postprocessor_args': ['-y'],
+                'paths': {
+                    'home': DOWNLOAD_DIR,
+                    'temp': temp_dir,
                 }
             }
-            
+
             # Check if this is an audio-only download
             if format_id == 'bestaudio/best':
                 ydl_opts['postprocessors'] = [{
@@ -218,23 +316,39 @@ def download_video():
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }]
+                ydl_opts['extract_audio'] = True
+                ydl_opts['format'] = 'bestaudio'
             else:
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': 'mp4',
                 }]
-                
-            ydl_opts['paths'] = {
-                'home': DOWNLOAD_DIR,
-                'temp': temp_dir,
-            }
-            
-            with YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            
+                ydl_opts['format'] = format_id
+
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    logger.info("Starting YoutubeDL download...")
+                    ydl.download([url])
+                    logger.info("Download completed successfully")
+
+                # Clean up any remaining .part files
+                for file in os.listdir(DOWNLOAD_DIR):
+                    if file.endswith('.part') or file.endswith('.ytdl'):
+                        try:
+                            os.remove(os.path.join(DOWNLOAD_DIR, file))
+                        except:
+                            pass
+
+            except Exception as e:
+                logger.error(f"Error during download: {str(e)}")
+                raise
+
         return jsonify({'success': True})
 
     except Exception as e:
+        logger.error(f"Download error: {str(e)}")
+        progress_tracker.progress['status'] = 'error'
+        progress_tracker.progress['error'] = str(e)
         return jsonify({'error': str(e)}), 400
 
 if __name__ == '__main__':
