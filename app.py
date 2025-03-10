@@ -142,6 +142,23 @@ def get_formats():
                         'height': target
                     })
             
+            # Add MP3 audio option at the end
+            # Find best audio format for size estimation
+            best_audio = None
+            for f in info.get('formats', []):
+                if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                    if best_audio is None or (f.get('filesize', 0) and f.get('filesize', 0) > best_audio.get('filesize', 0)):
+                        best_audio = f
+            
+            audio_size = format_size(best_audio.get('filesize', 0)) if best_audio else 'Automatic'
+            response_data['formats'].append({
+                'format_id': 'bestaudio/best',
+                'resolution': f"Audio Only (mp3) - Size: {audio_size}",
+                'ext': 'mp3',
+                'filesize': audio_size,
+                'height': 0  # Lowest priority for sorting
+            })
+            
             return jsonify(response_data)
 
     except Exception as e:
@@ -169,17 +186,27 @@ def download_video():
                 'format': format_id,
                 'quiet': True,
                 'outtmpl': os.path.join(DOWNLOAD_DIR, '%(title)s.%(ext)s'),
-                'merge_output_format': 'mp4',
+                'merge_output_format': 'mp4',  # Default for video
                 'ffmpeg_location': FFMPEG_PATH,
-                'postprocessors': [{
+                'progress_hooks': [progress_tracker],
+            }
+            
+            # Check if this is an audio-only download
+            if format_id == 'bestaudio/best':
+                ydl_opts['postprocessors'] = [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }]
+            else:
+                ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': 'mp4',
-                }],
-                'paths': {
-                    'home': DOWNLOAD_DIR,
-                    'temp': temp_dir,
-                },
-                'progress_hooks': [progress_tracker],  # Add the progress hook here
+                }]
+                
+            ydl_opts['paths'] = {
+                'home': DOWNLOAD_DIR,
+                'temp': temp_dir,
             }
             
             with YoutubeDL(ydl_opts) as ydl:
